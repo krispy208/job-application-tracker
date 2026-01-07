@@ -1,7 +1,6 @@
 import express from "express";
+import { pool } from "./db.js"
 
-let applications = [];
-let nextId = 1;
 
 const app = express();
 
@@ -15,53 +14,106 @@ app.get("/health", (req, res) => {
   res.json({ status: "still alive" });
 });
 
-app.get("/applications", (req, res) => {
-  res.json(applications)
+app.get("/applications", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, company, role, status, link, notes, created_at FROM applications ORDER BY id DESC"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
-app.post("/applications", (req, res) => {
-  const { company, role, status, link, notes } = req.body;
-  if (!company || !role) {
-    return res.status(400).json({ error: "Company and role are required" })
+app.get("/db-health", async (req, res) => {
+  try {
+    const result = await pool.query("SELECT NOW() as now");
+    res.json({ ok: true, now: result.rows[0].now });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
   }
-
-  const appEntry = {
-    id: nextId++,
-    company,
-    role,
-    status: status ?? "applied",
-    link: link ?? "",
-    notes: notes ?? "",
-    createdAt: new Date().toISOString()
-  };
-  applications.push(appEntry);
-  res.status(201).json(appEntry);
 });
 
-app.put("/applications/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const application = applications.find(app => app.id === id);
-  if (!application) {
-    return res.status(404).json({ error: "Application not found" });
+
+
+app.put("/applications/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "Invalid id" });
+    }
+
+    const { company, role, status, link, notes } = req.body;
+
+    const result = await pool.query(
+      `UPDATE applications
+       SET company = COALESCE($1, company),
+           role    = COALESCE($2, role),
+           status  = COALESCE($3, status),
+           link    = COALESCE($4, link),
+           notes   = COALESCE($5, notes)
+       WHERE id = $6
+       RETURNING id, company, role, status, link, notes, created_at`,
+      [company ?? null, role ?? null, status ?? null, link ?? null, notes ?? null, id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Application not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
   }
-  const { company, role, status, link, notes } = req.body;
-  application.company = company ?? application.company;
-  application.role = role ?? application.role;
-  application.status = status ?? application.status;
-  application.link = link ?? application.link;
-  application.notes = notes ?? application.notes
-  res.json(application);
 });
 
-app.delete("/applications/:id", (req, res) => {
-  const id = Number(req.params.id);
-  const index = applications.findIndex(app => app.id === id);
-  if (index === -1) {
-    return res.status(404).json({ error: "Application not found" });
+
+app.post("/applications", async (req, res) => {
+  try {
+    const { company, role, status, link, notes } = req.body;
+
+    if (!company || !role) {
+      return res.status(400).json({ error: "Company and role are required" });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO applications (company, role, status, link, notes)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, company, role, status, link, notes, created_at`,
+      [company, role, status ?? "applied", link ?? "", notes ?? ""]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
   }
-  applications.splice(index, 1);
-  res.status(204).send()
-})
+});
+
+
+app.delete("/applications/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: "Invalid id" });
+    }
+
+    const result = await pool.query("DELETE FROM applications WHERE id = $1", [id]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "Application not found" });
+    }
+
+    res.status(204).send();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Database error" });
+  }
+});
+
 
 const PORT = process.env.PORT || 5050;
 app.listen(PORT, () => {
